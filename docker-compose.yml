@@ -32,7 +32,7 @@ services:
   serve:
     <<: *qwen
     ports:
-      - "${PORT:-18020}:${PORT:-18020}"
+      - "${PORT:-8000}:${PORT:-8000}"
     depends_on:
       prepare:
         condition: service_completed_successfully
@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${PORT:-18020}/health"]
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${PORT:-8000}/health"]
       interval: 30s
       timeout: 5s
       retries: 3

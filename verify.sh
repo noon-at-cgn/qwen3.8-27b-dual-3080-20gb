@@ -98,8 +98,8 @@ if [ -f /.dockerenv ]; then :; elif systemctl is-active vllm-qwen3.8-27b >/dev/n
 fi  # INSTALL
 
 if [ $NOSRV = 0 ]; then
-  echo "== live server (127.0.0.1:${PORT:-18020})"
-  PORT=${PORT:-18020}
+  echo "== live server (127.0.0.1:${PORT:-8000})"
+  PORT=${PORT:-8000}
   if curl -sf -o /dev/null http://127.0.0.1:$PORT/health; then
     ok "/health 200"
     KEY=${VLLM_API_KEY:-$(cat api_key.txt 2>/dev/null)}

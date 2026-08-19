@@ -87,7 +87,7 @@ GPUs, JIT-compiled kernels). Later starts reuse the compiled cache and are
 much faster.
 
 ```bash
-curl http://localhost:18020/v1/chat/completions \
+curl http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer $(cat api_key.txt)" \
   -H "Content-Type: application/json" \
   -d '{"model": "qwen3.8-27b",
@@ -110,7 +110,7 @@ warmup).
 | `MAX_LEN` | `262144` | context length |
 | `MAX_SEQS` | `8` | concurrent request slots |
 | `PREFIX_CACHE` | `0` | `1` reuses KV for a shared prompt prefix across requests/turns |
-| `PORT` | `18020` | |
+| `PORT` | `8000` | |
 
 ### systemd
 

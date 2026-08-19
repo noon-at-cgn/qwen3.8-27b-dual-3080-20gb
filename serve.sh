@@ -41,7 +41,7 @@ if [ -z "$MODEL" ] && [ -d "$DIR/models/Qwen3.8-27B-W4A16-AutoRound-fast" ]; the
   MODEL=$DIR/models/Qwen3.8-27B-W4A16-AutoRound-fast
 fi
 MODEL=${MODEL:-$DIR/models/Qwen3.8-27B-W4A16-AutoRound}
-PORT=${PORT:-18020}
+PORT=${PORT:-8000}
 MAX_SEQS=${MAX_SEQS:-8}
 API_SERVERS=${API_SERVERS:-1}
 

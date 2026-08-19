@@ -14,7 +14,7 @@ REPO="$(dirname "$HERE")"
 cd "$REPO"
 export PATH="$REPO/venv/bin:$PATH"
 export OPENAI_API_KEY=${VLLM_API_KEY:-$(cat "$REPO/api_key.txt" 2>/dev/null)}
-HOST=${HOST:-127.0.0.1}; PORT=${PORT:-18020}
+HOST=${HOST:-127.0.0.1}; PORT=${PORT:-8000}
 MODEL=${MODEL:-$REPO/models/Qwen3.8-27B-W4A16-AutoRound}
 B="venv/bin/vllm bench serve --host $HOST --port $PORT --model $MODEL --served-model-name qwen3.8-27b"
 OUT=${OUT:-$HERE/results}; mkdir -p "$OUT"
