@@ -1,0 +1,23 @@
+[Unit]
+Description=Qwen3.8-27B vLLM server (2x RTX 3080 20 GB, TP=2, DFlash2, 262144 ctx)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Repo checkout path — edit if you installed somewhere other than
+# /opt/qwen3.8-27b-dual-3080-20gb (see README "systemd").
+WorkingDirectory=/opt/qwen3.8-27b-dual-3080-20gb
+# Wait for ALL GPUs to actually be free before starting. If vLLM profiles
+# memory while a previous process is still releasing VRAM, it permanently
+# allocates a smaller cache pool and throughput quietly suffers (main repo's
+# README, gotcha 2) — with 2 GPUs every card has to clear, not just one.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 60); do busy=0; while read -r u; do [ "$u" -ge 1000 ] && busy=1; done < <(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits); [ "$busy" -eq 0 ] && exit 0; sleep 2; done; exit 1'
+ExecStart=/bin/bash /opt/qwen3.8-27b-dual-3080-20gb/serve.sh
+Restart=on-failure
+RestartSec=20
+StandardOutput=append:/opt/qwen3.8-27b-dual-3080-20gb/qwen.log
+StandardError=append:/opt/qwen3.8-27b-dual-3080-20gb/qwen.log
+
+[Install]
+WantedBy=multi-user.target

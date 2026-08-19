@@ -1,0 +1,56 @@
+# Qwen3.8-27B on 2x RTX 3080 20 GB, containerized. See README "Docker".
+#
+#   docker compose up -d                  # download/requantize (idempotent) then serve
+#   docker compose run --rm prepare       # just download + requantize the model
+#   docker compose run --rm serve verify  # verify.sh inside the container
+#
+# Knobs go in a .env file next to this file (never committed): VLLM_API_KEY=...,
+# and any of serve.sh's variables (TP, GPU_UTIL, MAX_LEN, MAX_SEQS, SPEC,
+# SPEC_ATTN, PREFIX_CACHE, EXTRA_ARGS, ...) — .env is passed straight into the
+# container. PORT and MODELS_DIR are read here: models live in ./models by
+# default (the same layout as the venv install, so both can share one
+# download). GPU_COUNT (default 2) sets how many GPUs the container gets.
+
+x-qwen: &qwen
+  image: qwen38-27b-dual-3080:latest
+  build: .
+  ipc: host
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    HOME: /cache
+  volumes:
+    - ${MODELS_DIR:-./models}:/app/models
+    - qwen-cache:/cache
+
+services:
+  prepare:
+    <<: *qwen
+    command: prepare
+
+  serve:
+    <<: *qwen
+    ports:
+      - "${PORT:-18020}:${PORT:-18020}"
+    depends_on:
+      prepare:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: ${GPU_COUNT:-2}
+              capabilities: [gpu]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:${PORT:-18020}/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 900s   # first start: torch.compile + CUDA graphs + FlashInfer JIT
+
+volumes:
+  qwen-cache:
