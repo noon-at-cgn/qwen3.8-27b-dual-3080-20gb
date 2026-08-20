@@ -110,7 +110,13 @@ warmup).
 | `MAX_LEN` | `262144` | context length |
 | `MAX_SEQS` | `8` | concurrent request slots |
 | `PREFIX_CACHE` | `0` | `1` reuses KV for a shared prompt prefix across requests/turns |
+| `ENABLE_THINKING` | `true` | server-side default for chat clients (OpenWebUI, Hermes, ...) that don't pass `chat_template_kwargs` themselves; `preserve_thinking` is always on so reasoning survives multi-turn tool calling |
 | `PORT` | `8000` | |
+
+Tool calling (`--enable-auto-tool-choice --tool-call-parser qwen3_coder`) is
+always on — needed for clients that send `tool_choice: "auto"` (OpenWebUI
+errors without it: `"auto" tool choice requires --enable-auto-tool-choice and
+--tool-call-parser to be set`).
 
 ### systemd
 

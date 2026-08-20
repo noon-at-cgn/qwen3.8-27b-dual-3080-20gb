@@ -102,4 +102,5 @@ exec venv/bin/vllm serve "$MODEL" \
   --compilation-config "{\"max_cudagraph_capture_size\":$CG,\"custom_ops\":[\"+rms_norm\",\"+silu_and_mul\"]}" \
   --reasoning-parser qwen3 \
   --enable-auto-tool-choice --tool-call-parser qwen3_coder \
+  --default-chat-template-kwargs "{\"enable_thinking\":${ENABLE_THINKING:-true},\"preserve_thinking\":true}" \
   ${EXTRA_ARGS}
