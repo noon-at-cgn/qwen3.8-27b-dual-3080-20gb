@@ -101,4 +101,5 @@ exec venv/bin/vllm serve "$MODEL" \
   --speculative-config "$SPEC_CFG" \
   --compilation-config "{\"max_cudagraph_capture_size\":$CG,\"custom_ops\":[\"+rms_norm\",\"+silu_and_mul\"]}" \
   --reasoning-parser qwen3 \
+  --enable-auto-tool-choice --tool-call-parser qwen3_coder \
   ${EXTRA_ARGS}
