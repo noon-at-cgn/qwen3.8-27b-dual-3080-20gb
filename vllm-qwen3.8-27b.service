@@ -11,7 +11,11 @@ WorkingDirectory=/opt/qwen3.8-27b-dual-3080-20gb
 # Reuse KV across requests/turns sharing a prompt prefix — a large win for
 # repeated system prompts (agent tool schemas, coding-assistant instructions)
 # and multi-turn chat on the same document. See README "Config knobs".
+# Costs one extra recurrent-state page per request; at GPU_UTIL=0.965 that
+# overflowed the pool by ~10 MB at MAX_LEN=262144 (ValueError: 8.48 GiB
+# needed, 8.47 GiB available) — 0.97 covers it with margin to spare.
 Environment=PREFIX_CACHE=1
+Environment=GPU_UTIL=0.97
 # Wait for ALL GPUs to actually be free before starting. If vLLM profiles
 # memory while a previous process is still releasing VRAM, it permanently
 # allocates a smaller cache pool and throughput quietly suffers (main repo's
