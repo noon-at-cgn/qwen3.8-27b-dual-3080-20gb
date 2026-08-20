@@ -8,6 +8,10 @@ Type=simple
 # Repo checkout path — edit if you installed somewhere other than
 # /opt/qwen3.8-27b-dual-3080-20gb (see README "systemd").
 WorkingDirectory=/opt/qwen3.8-27b-dual-3080-20gb
+# Reuse KV across requests/turns sharing a prompt prefix — a large win for
+# repeated system prompts (agent tool schemas, coding-assistant instructions)
+# and multi-turn chat on the same document. See README "Config knobs".
+Environment=PREFIX_CACHE=1
 # Wait for ALL GPUs to actually be free before starting. If vLLM profiles
 # memory while a previous process is still releasing VRAM, it permanently
 # allocates a smaller cache pool and throughput quietly suffers (main repo's
