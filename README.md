@@ -1,208 +1,436 @@
-# Qwen3.8-27B on 2x RTX 3080 20 GB
+# Qwen3.8-27B on 2× RTX 3080 20GB
 
-Serve [Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B) on two 20 GB
-consumer GPUs (40 GB combined), tensor-parallel across both cards, at the
-model's **full native 262,144-token context**, with DFlash2 speculative
-decoding for **133-140 tok/s single-stream** generation.
+Run **Qwen3.8-27B** on two 20 GB consumer GPUs (**40 GB total VRAM**) with tensor parallelism, the model's full native **262,144-token context window**, and **DFlash2 speculative decoding**.
 
-Inspired by / built on top of the quantization and vLLM-patch work in
-[syv-ai/qwen38-27b-rtx3090](https://github.com/syv-ai/qwen38-27b-rtx3090)
-(Apache-2.0), which targets a single 24 GB card. This repo re-tunes that work
-for two smaller cards with no NVLink and picks the one config — tensor
-parallelism + DFlash2 + bf16 KV — that came out fastest after benchmarking
-every alternative on this exact hardware.
+On two RTX 3080 20GB cards, this setup reaches **133–140 tok/s** for single-stream generation on real chat prompts.
 
-| | |
-|---|---|
-| single-stream, real chat prompts | **133-140 tok/s** default sampling, **138-139 tok/s** greedy |
-| context | **262,144** tokens (the model's full native max) |
-| hardware | 2x RTX 3080 20 GB, no NVLink, no GPU-to-GPU P2P |
+The project is inspired by and builds on the quantization and vLLM work from [syv-ai/qwen38-27b-rtx3090](https://github.com/syv-ai/qwen38-27b-rtx3090) (Apache-2.0), which targets a single 24 GB RTX 3090. This version adapts the approach to two smaller GPUs without NVLink and benchmarks the available configurations to find the fastest combination for this hardware.
 
-## Quick start
+|                      |                                         |
+| -------------------- | --------------------------------------- |
+| **Generation speed** | **133–140 tok/s** with default sampling |
+| **Greedy decoding**  | **138–139 tok/s**                       |
+| **Context length**   | **262,144 tokens**                      |
+| **Hardware**         | **2× RTX 3080 20GB**                    |
+| **GPU interconnect** | PCIe, no NVLink, no GPU-to-GPU P2P      |
+
+> **Note:** The RTX 3080 20GB cards used here are non-reference models. Standard RTX 3080 cards have 10GB or 12GB of VRAM.
+
+## Quick Start
+
+### Docker
 
 ```bash
-git clone <this-repo-url> && cd qwen3.8-27b-dual-3080-20gb
+git clone <this-repo-url>
+cd qwen3.8-27b-dual-3080-20gb
+
 echo "VLLM_API_KEY=$(openssl rand -hex 24)" > .env
+
 docker compose up -d
 docker compose logs -f serve
 ```
 
-Or by hand in a venv — see [Setup](#setup).
+### Manual installation
+
+See [Setup](#setup) below for a step-by-step installation.
+
+Once the server is running:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer $(cat api_key.txt)" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen3.8-27b",
+    "messages": [{"role": "user", "content": "hej"}],
+    "chat_template_kwargs": {"enable_thinking": false}
+  }'
+```
+
+Run the verification and benchmark scripts to check your installation:
+
+```bash
+bash verify.sh
+bash bench/run_benchmarks.sh
+```
+
+Run the benchmark twice after a restart. The first run can be slower because CUDA kernels and graphs may still be warming up.
+
+---
 
 ## Setup
 
-You need: two Ampere-or-newer NVIDIA GPUs with at least 20 GB each (tested on
-2x RTX 3080 20 GB — the non-reference 20 GB boards, not the stock 10/12 GB
-3080), a recent driver, Python 3.12, ~40 GB disk.
+### Requirements
 
-Check your PCIe/NVLink topology — this repo defaults to assuming no P2P
-(the common case for non-3090/professional cards):
+* 2× NVIDIA GPUs with **at least 20 GB VRAM each**
+* Ampere architecture or newer
+* Recent NVIDIA driver
+* Python 3.12
+* ~40 GB of free disk space
+* vLLM 0.27.1
+* CUDA-compatible PyTorch environment
+
+This project was specifically tested on **2× RTX 3080 20GB**.
+
+Before starting, check your PCIe topology and whether GPU P2P is available:
 
 ```bash
 nvidia-smi topo -m
+
 python3 -c "import torch; print(torch.cuda.can_device_access_peer(0, 1))"
 ```
 
-If that prints `True`, pass `P2P=1` to `serve.sh` to skip the
-`NCCL_P2P_DISABLE=1 --disable-custom-all-reduce` fallback.
+If P2P is available, start the server with:
+
+```bash
+P2P=1 bash serve.sh
+```
+
+Otherwise, the default configuration disables NCCL P2P and custom all-reduce.
+
+### Installation
 
 ```bash
 git clone <this-repo-url> ~/qwen-dual-3080
 cd ~/qwen-dual-3080
 
 python3 -m venv venv
-venv/bin/pip install vllm==0.27.1 huggingface_hub hf_transfer ninja pandas
 
-# base model, ~19.5 GB
-HF_HUB_ENABLE_HF_TRANSFER=1 venv/bin/hf download \
+venv/bin/pip install \
+  vllm==0.27.1 \
+  huggingface_hub \
+  hf_transfer \
+  ninja \
+  pandas
+```
+
+Download the base checkpoint:
+
+```bash
+HF_HUB_ENABLE_HF_TRANSFER=1 \
+venv/bin/hf download \
   dbirks/Qwen3.8-27B-W4A16-AutoRound \
   --local-dir models/Qwen3.8-27B-W4A16-AutoRound
+```
 
-# requantize lm_head + embeddings to int8 (CPU only, a couple minutes) —
-# DFlash2's drafter shares these two with the target model directly
-venv/bin/python quant_lm_head.py models/Qwen3.8-27B-W4A16-AutoRound
-venv/bin/python quant_embed.py   models/Qwen3.8-27B-W4A16-AutoRound
-# int4-GPTQ lm_head (serve.sh picks up the "-fast" checkpoint automatically)
+DFlash2 shares the embedding and language-model head with the target model, so these layers are requantized to int8:
+
+```bash
+venv/bin/python quant_lm_head.py \
+  models/Qwen3.8-27B-W4A16-AutoRound
+
+venv/bin/python quant_embed.py \
+  models/Qwen3.8-27B-W4A16-AutoRound
+```
+
+Download the faster int4-GPTQ language-model head and the DFlash2 drafter:
+
+```bash
 venv/bin/python fetch_fast_variant.py
-# the W4A16 DFlash2 block drafter
 venv/bin/python fetch_dflash2.py
+```
 
-# patch vllm (written against 0.27.1, currently also the latest release)
+Finally, apply the vLLM patches:
+
+```bash
 for p in patches/*.patch; do
-  patch -p1 -d venv/lib/python3.12/site-packages/vllm < $p
+  patch -p1 -d venv/lib/python3.12/site-packages/vllm < "$p"
 done
+```
 
+Generate an API key:
+
+```bash
 openssl rand -hex 24 > api_key.txt
 ```
 
-Then `bash verify.sh --no-server` — checks the venv, that every patch applied,
-both GPUs are visible with their P2P status, and the model is fully prepared.
+Verify the installation:
+
+```bash
+bash verify.sh --no-server
+```
+
+The verification script checks:
+
+* vLLM and Python environment
+* required patches
+* model and DFlash2 checkpoints
+* GPU visibility
+* GPU P2P availability
+* model preparation
+
+Start the server:
 
 ```bash
 bash serve.sh
 ```
 
-First start takes several minutes (torch.compile, CUDA graph capture on both
-GPUs, JIT-compiled kernels). Later starts reuse the compiled cache and are
-much faster.
+The first startup can take several minutes while `torch.compile`, CUDA graph capture, and JIT-compiled kernels are initialized. Subsequent starts reuse the compiled cache.
+
+---
+
+## Configuration
+
+The main settings are exposed through `serve.sh`:
+
+| Variable          |  Default | Description                                              |
+| ----------------- | -------: | -------------------------------------------------------- |
+| `TP`              |      `2` | Tensor-parallel degree                                   |
+| `P2P`             |      `0` | Set to `1` when GPU P2P is available                     |
+| `GPU_UTIL`        |  `0.965` | vLLM GPU memory utilization                              |
+| `MAX_LEN`         | `262144` | Maximum context length                                   |
+| `MAX_SEQS`        |      `8` | Maximum concurrent request slots                         |
+| `PREFIX_CACHE`    |      `0` | Enable prefix caching                                    |
+| `VISION`          |      `0` | Enable image input                                       |
+| `ENABLE_THINKING` |   `true` | Default thinking mode for clients that do not specify it |
+| `PORT`            |   `8000` | API server port                                          |
+
+For example:
 
 ```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Authorization: Bearer $(cat api_key.txt)" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "qwen3.8-27b",
-       "messages": [{"role": "user", "content": "hej"}],
-       "chat_template_kwargs": {"enable_thinking": false}}'
+MAX_LEN=131072 MAX_SEQS=4 bash serve.sh
 ```
 
-Then `bash verify.sh` (also probes the live server) and
-`bash bench/run_benchmarks.sh` to reproduce the numbers above on your own
-hardware (run it twice — the first pass after any restart reads low from JIT
-warmup).
+### Tool Calling
 
-### Config knobs (`serve.sh`)
+Tool calling is enabled by default with:
 
-| var | default | what |
-|---|---|---|
-| `TP` | `2` | tensor-parallel degree (GPU count) |
-| `P2P` | `0` | set `1` if your cards have working P2P |
-| `GPU_UTIL` | `0.965` | `--gpu-memory-utilization` |
-| `MAX_LEN` | `262144` | context length |
-| `MAX_SEQS` | `8` | concurrent request slots |
-| `PREFIX_CACHE` | `0` | `1` reuses KV for a shared prompt prefix across requests/turns |
-| `VISION` | `0` | `1` enables image input (see [Vision](#vision) below); default is `--language-model-only` |
-| `ENABLE_THINKING` | `true` | server-side default for chat clients (OpenWebUI, Hermes, ...) that don't pass `chat_template_kwargs` themselves; `preserve_thinking` is always on so reasoning survives multi-turn tool calling |
-| `PORT` | `8000` | |
+```text
+--enable-auto-tool-choice
+--tool-call-parser qwen3_coder
+```
 
-Tool calling (`--enable-auto-tool-choice --tool-call-parser qwen3_coder`) is
-always on — needed for clients that send `tool_choice: "auto"` (OpenWebUI
-errors without it: `"auto" tool choice requires --enable-auto-tool-choice and
---tool-call-parser to be set`).
+This is required by clients such as OpenWebUI when they send:
 
-### systemd
+```text
+tool_choice: "auto"
+```
+
+Without these flags, vLLM rejects such requests.
+
+---
+
+## Systemd
+
+The repository includes a systemd service for running the server automatically:
 
 ```bash
-sudo cp -r ~/qwen-dual-3080 /opt/qwen3.8-27b-dual-3080-20gb
-sudo cp /opt/qwen3.8-27b-dual-3080-20gb/vllm-qwen3.8-27b.service /etc/systemd/system/
+sudo cp -r ~/qwen-dual-3080 \
+  /opt/qwen3.8-27b-dual-3080-20gb
+
+sudo cp \
+  /opt/qwen3.8-27b-dual-3080-20gb/vllm-qwen3.8-27b.service \
+  /etc/systemd/system/
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now vllm-qwen3.8-27b
+```
+
+Follow the logs with:
+
+```bash
 journalctl -u vllm-qwen3.8-27b -f
 ```
 
-The unit waits for both GPUs to report near-zero memory used before
-starting — restarting onto a dirty GPU (previous process still releasing
-VRAM) silently shrinks the profiled KV cache pool with no error. Edit
-`WorkingDirectory=`/`ExecStart=` if you installed somewhere other than
-`/opt/qwen3.8-27b-dual-3080-20gb`.
+The service waits for both GPUs to report near-zero memory usage before starting. This prevents a restart from occurring while a previous process is still releasing VRAM.
 
-### Docker
+This matters because vLLM profiles its KV-cache pool during startup. Starting while residual VRAM is still occupied can silently reduce the available KV-cache capacity.
+
+If you install the project somewhere other than `/opt/qwen3.8-27b-dual-3080-20gb`, update `WorkingDirectory=` and `ExecStart=` in the service file.
+
+---
+
+## Docker
+
+The Docker setup requires:
+
+* NVIDIA driver **≥ 580** with CUDA 13 support
+* Docker
+* NVIDIA Container Toolkit
+
+See the [NVIDIA Container Toolkit installation guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+Start the complete stack with:
 
 ```bash
-git clone <this-repo-url> && cd qwen3.8-27b-dual-3080-20gb
+git clone <this-repo-url>
+cd qwen3.8-27b-dual-3080-20gb
+
 echo "VLLM_API_KEY=$(openssl rand -hex 24)" > .env
+
 docker compose up -d
 docker compose logs -f serve
 ```
 
-Requires an NVIDIA driver that speaks CUDA 13 (≥ 580) and Docker with the
-[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-The first `up` builds the image, downloads/requantizes the model into
-`./models`, then serves. Every `serve.sh` knob works from `.env`; `PORT`,
-`MODELS_DIR`, and `GPU_COUNT` (default `2`) are read by compose itself.
-`docker compose run --rm serve verify` runs `verify.sh` inside the container.
+The first `docker compose up` builds the image and prepares the model. The model is stored under `./models`.
+
+The same `serve.sh` configuration options can be supplied through `.env`.
+
+`PORT`, `MODELS_DIR`, and `GPU_COUNT` are read directly by Docker Compose.
+
+To run verification inside the container:
+
+```bash
+docker compose run --rm serve verify
+```
+
+---
 
 ## Vision
 
-The checkpoint's architecture (`Qwen3_5ForConditionalGeneration`) is
-vision-capable, and its `visual.*` tower (~0.9 GB bf16) is kept through
-quantization for exactly this reason. `--language-model-only` (the default,
-`VISION=0`) doesn't drop the tower or change which model class loads — it
-just zeroes the per-prompt image/video limit at the config level
-(`vllm/config/multimodal.py get_limit_per_prompt`). Set `VISION=1` to accept
-images.
+The checkpoint uses `Qwen3_5ForConditionalGeneration` and retains the model's vision tower (~0.9 GB in bf16).
 
-Vision costs KV headroom, so it doesn't fit at the full 262,144-token
-context on 40 GB total VRAM — at that context the shortfall is a genuine
-~2.3 GB, not closeable by raising `GPU_UTIL` further (it hits a pre-flight
-free-memory ceiling around `0.98` first). Lower `MAX_LEN` to make room; one
-validated working point on this hardware is `MAX_LEN=220000` with
-`GPU_UTIL=0.977` and `PREFIX_CACHE=1`, which leaves a ~1.02x KV concurrency
-margin. Re-benchmark and re-soak-test (see [Why this config](#why-this-config))
-before trusting a `GPU_UTIL`/`MAX_LEN` pair you haven't run yourself.
+By default, the server runs with:
 
-## Why this config
+```text
+--language-model-only
+```
 
-Benchmarked against every alternative on this exact hardware before settling
-here: plain tensor parallelism with Qwen's own MTP speculative head and fp8
-KV cache (the straightforward port of the upstream single-GPU recipe) reached
-only ~62-71 tok/s — communication over PCIe with no NVLink dominates at batch
-size 1. Switching to bf16 KV + FlashAttention's split-KV verify patch nearly
-doubled that at the same full context, and DFlash2's block drafter (proposes
-a whole 7-token block per pass instead of chaining single-token drafts) added
-another ~6% on top — the config this repo ships. A single GPU alone, no
-parallelism, was only marginally faster than the two-GPU config above at 1/8th
-the context, and pipeline parallelism isn't supported for this model's
-speculative-decoding path in vLLM 0.27.1 at all.
+This does **not** remove the vision tower or change the model class. Instead, it disables image/video inputs at the vLLM configuration level.
 
-KV cache stays bf16 rather than fp8 for two independent reasons on this
-hardware. First, DFlash2's drafter needs non-causal cross-attention, and
-until vLLM's FlashInfer-backend fix (PR #43081, merged after this repo's
-0.27.1 pin) every attention backend either rejected non-causal attention
-outright or excluded fp8 KV dtypes in non-causal mode — a structural
-conflict, not a tuning choice. Second, even with that fix, it requires the
-FlashInfer backend, which this repo avoids (`VLLM_USE_FLASHINFER_SAMPLER=0`)
-due to a CUDA/cub JIT-compile incompatibility on this toolchain. And
-RTX 3080 (Ampere) has no native fp8 tensor cores at all — fp8 tensor cores
-arrived with Hopper/Ada — so even where fp8 KV does work elsewhere (e.g. the
-PR's own RTX 4090 benchmark), it measured *slower* than bf16, not faster.
+Set:
 
-The `--gpu-memory-utilization 0.965` this repo uses leaves KV headroom at
-exactly 1.00x for the full 262144-token context — no slack for more than one
-resident full-length request. It's soak-tested (a 20,000+-token prompt and a
-2,000+-token generation both completed cleanly), but lower `GPU_UTIL`,
-`MAX_LEN`, or `MAX_SEQS` if you need more margin for concurrent long
-generations, or if these cards run other work too.
+```bash
+VISION=1
+```
+
+to enable image input.
+
+### Vision + Long Context
+
+Vision requires additional VRAM and therefore does not fit at the full 262,144-token context on 40 GB total VRAM.
+
+At the full context length, the measured shortfall is approximately **2.3 GB**. Increasing `GPU_UTIL` cannot recover this memory because vLLM reaches its pre-flight free-memory limit at roughly `0.98`.
+
+One validated configuration that leaves enough room for vision is:
+
+```bash
+MAX_LEN=220000
+GPU_UTIL=0.977
+PREFIX_CACHE=1
+```
+
+This provides approximately a **1.02× KV-cache concurrency margin** on the tested hardware.
+
+If you change `GPU_UTIL` or `MAX_LEN`, benchmark and soak-test the new configuration before relying on it for long-running workloads.
+
+---
+
+## Why This Configuration?
+
+The configuration shipped here was selected after benchmarking several alternatives on the same two RTX 3080 20GB cards.
+
+### Tensor parallelism
+
+The model is split across both GPUs using tensor parallelism:
+
+```text
+GPU 0 ─┐
+       ├── Tensor Parallelism ── Qwen3.8-27B
+GPU 1 ─┘
+```
+
+Because these cards do not have NVLink or GPU-to-GPU P2P, communication happens over PCIe. At batch size 1, that communication overhead becomes a major part of the latency.
+
+A straightforward implementation using Qwen's MTP speculative head with fp8 KV cache reached only around **62–71 tok/s**.
+
+### bf16 KV cache
+
+Switching from fp8 KV cache to **bf16 KV cache**, together with the FlashAttention split-KV verification patch, nearly doubled generation speed at the full 262K context.
+
+This may seem counterintuitive because bf16 uses more memory, but on this particular hardware the faster attention path more than compensates for the additional memory consumption.
+
+There are also two implementation reasons for keeping the KV cache in bf16.
+
+First, DFlash2 uses non-causal cross-attention. Before the relevant FlashInfer fix (PR #43081), the available attention backends either rejected non-causal attention or did not support fp8 KV in that mode.
+
+Second, the FlashInfer path requires a toolchain that is problematic with the CUDA/CUB JIT compilation used by this setup, so this project disables the FlashInfer sampler with:
+
+```text
+VLLM_USE_FLASHINFER_SAMPLER=0
+```
+
+Finally, RTX 3080 is an Ampere GPU and does not have native fp8 tensor cores. FP8 KV therefore does not provide the same hardware acceleration available on newer architectures such as Ada and Hopper. In testing on this hardware, bf16 was actually faster.
+
+### DFlash2
+
+DFlash2 adds another performance improvement on top of the optimized attention path.
+
+Instead of generating speculative tokens one at a time, the DFlash2 drafter proposes a **7-token block** in a single pass. On this setup, that added approximately **6%** more throughput.
+
+The final configuration is therefore:
+
+```text
+2× RTX 3080 20GB
+        │
+        ▼
+Tensor Parallelism
+        │
+        ▼
+Qwen3.8-27B W4A16
+        │
+        ├── bf16 KV cache
+        │
+        └── DFlash2 speculative decoding
+                 │
+                 ▼
+          133–140 tok/s
+```
+
+Pipeline parallelism was not used because the speculative-decoding path for this model is not supported with pipeline parallelism in vLLM 0.27.1.
+
+---
+
+## Memory Considerations
+
+At:
+
+```text
+MAX_LEN=262144
+GPU_UTIL=0.965
+```
+
+the KV-cache pool is essentially sized for **one full-length request**.
+
+The configuration has been soak-tested with:
+
+* 20,000+ token prompts
+* 2,000+ token generations
+
+and completed successfully on the tested hardware.
+
+However, this should not be interpreted as a configuration with large memory headroom.
+
+If you need:
+
+* multiple long-context requests,
+* longer generations,
+* other CUDA workloads running alongside vLLM, or
+* additional safety margin,
+
+reduce `MAX_LEN`, `GPU_UTIL`, or `MAX_SEQS` accordingly.
+
+---
+
+## Benchmarking
+
+Run:
+
+```bash
+bash bench/run_benchmarks.sh
+```
+
+For meaningful results:
+
+1. Restart the server.
+2. Run the benchmark once to warm up JIT kernels and CUDA graphs.
+3. Run it again and use the second result.
+4. Compare results only on the same hardware and software configuration.
+
+The reported **133–140 tok/s** numbers are from single-stream chat-style workloads, not synthetic maximum-throughput benchmarks.
+
+---
 
 ## License
 
-Apache-2.0, same as the upstream repo and the model.
+Apache-2.0.
