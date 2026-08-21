@@ -110,6 +110,7 @@ warmup).
 | `MAX_LEN` | `262144` | context length |
 | `MAX_SEQS` | `8` | concurrent request slots |
 | `PREFIX_CACHE` | `0` | `1` reuses KV for a shared prompt prefix across requests/turns |
+| `VISION` | `0` | `1` enables image input (see [Vision](#vision) below); default is `--language-model-only` |
 | `ENABLE_THINKING` | `true` | server-side default for chat clients (OpenWebUI, Hermes, ...) that don't pass `chat_template_kwargs` themselves; `preserve_thinking` is always on so reasoning survives multi-turn tool calling |
 | `PORT` | `8000` | |
 
@@ -150,6 +151,25 @@ The first `up` builds the image, downloads/requantizes the model into
 `MODELS_DIR`, and `GPU_COUNT` (default `2`) are read by compose itself.
 `docker compose run --rm serve verify` runs `verify.sh` inside the container.
 
+## Vision
+
+The checkpoint's architecture (`Qwen3_5ForConditionalGeneration`) is
+vision-capable, and its `visual.*` tower (~0.9 GB bf16) is kept through
+quantization for exactly this reason. `--language-model-only` (the default,
+`VISION=0`) doesn't drop the tower or change which model class loads — it
+just zeroes the per-prompt image/video limit at the config level
+(`vllm/config/multimodal.py get_limit_per_prompt`). Set `VISION=1` to accept
+images.
+
+Vision costs KV headroom, so it doesn't fit at the full 262,144-token
+context on 40 GB total VRAM — at that context the shortfall is a genuine
+~2.3 GB, not closeable by raising `GPU_UTIL` further (it hits a pre-flight
+free-memory ceiling around `0.98` first). Lower `MAX_LEN` to make room; one
+validated working point on this hardware is `MAX_LEN=220000` with
+`GPU_UTIL=0.977` and `PREFIX_CACHE=1`, which leaves a ~1.02x KV concurrency
+margin. Re-benchmark and re-soak-test (see [Why this config](#why-this-config))
+before trusting a `GPU_UTIL`/`MAX_LEN` pair you haven't run yourself.
+
 ## Why this config
 
 Benchmarked against every alternative on this exact hardware before settling
@@ -163,6 +183,18 @@ another ~6% on top — the config this repo ships. A single GPU alone, no
 parallelism, was only marginally faster than the two-GPU config above at 1/8th
 the context, and pipeline parallelism isn't supported for this model's
 speculative-decoding path in vLLM 0.27.1 at all.
+
+KV cache stays bf16 rather than fp8 for two independent reasons on this
+hardware. First, DFlash2's drafter needs non-causal cross-attention, and
+until vLLM's FlashInfer-backend fix (PR #43081, merged after this repo's
+0.27.1 pin) every attention backend either rejected non-causal attention
+outright or excluded fp8 KV dtypes in non-causal mode — a structural
+conflict, not a tuning choice. Second, even with that fix, it requires the
+FlashInfer backend, which this repo avoids (`VLLM_USE_FLASHINFER_SAMPLER=0`)
+due to a CUDA/cub JIT-compile incompatibility on this toolchain. And
+RTX 3080 (Ampere) has no native fp8 tensor cores at all — fp8 tensor cores
+arrived with Hopper/Ada — so even where fp8 KV does work elsewhere (e.g. the
+PR's own RTX 4090 benchmark), it measured *slower* than bf16, not faster.
 
 The `--gpu-memory-utilization 0.965` this repo uses leaves KV headroom at
 exactly 1.00x for the full 262144-token context — no slack for more than one

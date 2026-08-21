@@ -76,6 +76,17 @@ if [ "${PREFIX_CACHE:-0}" = "1" ]; then
   EXTRA_ARGS="--enable-prefix-caching --mamba-cache-mode align ${EXTRA_ARGS}"
 fi
 
+# The checkpoint's architecture (Qwen3_5ForConditionalGeneration) is vision-
+# capable and the visual.* tower is kept in bf16 through quantization for
+# exactly this reason (~0.9GB). --language-model-only just zeroes the
+# per-prompt image/video limit at the config level (vllm/config/multimodal.py
+# get_limit_per_prompt) — it doesn't change which class loads. Default on
+# for the lowest-risk/most headroom deploy; VISION=1 to enable image input.
+LM_ONLY_ARGS="--language-model-only"
+if [ "${VISION:-0}" = "1" ]; then
+  LM_ONLY_ARGS=""
+fi
+
 export PATH="$DIR/venv/bin:$PATH"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export VLLM_USE_FLASHINFER_SAMPLER=0
@@ -92,7 +103,7 @@ exec venv/bin/vllm serve "$MODEL" \
   --max-model-len $MAX_LEN \
   --max-num-seqs $MAX_SEQS \
   --api-server-count $API_SERVERS \
-  --language-model-only \
+  $LM_ONLY_ARGS \
   --attention-backend FLASH_ATTN --kv-cache-dtype bfloat16 \
   $TP_ARGS \
   --mamba-ssm-cache-dtype float16 \
