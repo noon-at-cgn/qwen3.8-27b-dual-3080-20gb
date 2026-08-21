@@ -16,6 +16,18 @@ The project is inspired by and builds on the quantization and vLLM work from [sy
 
 > **Note:** The RTX 3080 20GB cards used here are non-reference models. Standard RTX 3080 cards have 10GB or 12GB of VRAM.
 
+### Uncensored variant
+
+[noon-at-cgn/Qwen3.8-27B-Uncensored-W4A16-AutoRound](https://huggingface.co/noon-at-cgn/Qwen3.8-27B-Uncensored-W4A16-AutoRound)
+is the same quantization recipe applied to
+[orcarouter/Qwen3.8-27B-Uncensored](https://huggingface.co/orcarouter/Qwen3.8-27B-Uncensored)
+(an abliterated base) instead — same architecture, same excluded-module set,
+same serving config. Drop-in replacement: point `MODEL` at that repo instead
+of `dbirks/Qwen3.8-27B-W4A16-AutoRound` and everything else in this README
+(config knobs, systemd, Docker) works unchanged, at essentially the same
+133-140 tok/s. See that model's card for eval scores and its safety
+disclaimer before using it.
+
 ## Quick Start
 
 ### Docker
